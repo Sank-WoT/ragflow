@@ -49,6 +49,17 @@ class KnowledgebaseService(CommonService):
     model = Knowledgebase
 
     @classmethod
+    def _visibility_and_status_filter(cls, joined_tenant_ids, user_id):
+        """Peewee expression: kb visible to user (team or own) and status is VALID."""
+        return (
+            (
+                (cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission == TenantPermission.TEAM.value))
+                | (cls.model.tenant_id == user_id)
+            )
+            & (cls.model.status == StatusEnum.VALID.value)
+        )
+
+    @classmethod
     @DB.connection_context()
     def accessible4deletion(cls, kb_id, user_id):
         """Check if a dataset can be deleted by a specific user.
@@ -167,21 +178,14 @@ class KnowledgebaseService(CommonService):
             User.avatar.alias('tenant_avatar'),
             cls.model.update_time
         ]
+        visibility = cls._visibility_and_status_filter(joined_tenant_ids, user_id)
         if keywords:
             kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id)).where(
-                ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.tenant_id == user_id))
-                & (cls.model.status == StatusEnum.VALID.value),
-                (fn.LOWER(cls.model.name).contains(keywords.lower()))
+                visibility,
+                fn.LOWER(cls.model.name).contains(keywords.lower()),
             )
         else:
-            kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id)).where(
-                ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.tenant_id == user_id))
-                & (cls.model.status == StatusEnum.VALID.value)
-            )
+            kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id)).where(visibility)
         if parser_id:
             kbs = kbs.where(cls.model.parser_id == parser_id)
         if desc:
@@ -212,12 +216,8 @@ class KnowledgebaseService(CommonService):
             cls.model.create_date,
             cls.model.update_date
         ]
-        # find team kb and owned kb
-        kbs = cls.model.select(*fields).where(
-            (cls.model.tenant_id.in_(tenant_ids) & (cls.model.permission ==TenantPermission.TEAM.value)) | (
-                cls.model.tenant_id == user_id
-            )
-        )
+        # find team kb and owned kb (only VALID status)
+        kbs = cls.model.select(*fields).where(cls._visibility_and_status_filter(tenant_ids, user_id))
         # sort by create_time asc
         kbs.order_by(cls.model.create_time.asc())
         # maybe cause slow query by deep paginate, optimize later.
@@ -459,12 +459,7 @@ class KnowledgebaseService(CommonService):
         if parser_id:
             kbs = kbs.where(cls.model.parser_id == parser_id)
 
-        kbs = kbs.where(
-            ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                            TenantPermission.TEAM.value)) | (
-                cls.model.tenant_id == user_id))
-            & (cls.model.status == StatusEnum.VALID.value)
-        )
+        kbs = kbs.where(cls._visibility_and_status_filter(joined_tenant_ids, user_id))
 
         if desc:
             kbs = kbs.order_by(cls.model.getter_by(orderby).desc())
